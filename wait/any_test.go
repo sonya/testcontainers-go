@@ -254,3 +254,149 @@ func TestAnyMultiStrategy_handleNils(t *testing.T) {
 		}
 	})
 }
+
+func TestAnyMultiStrategy_Winner(t *testing.T) {
+	t.Parallel()
+
+	// blocked returns a strategy which never succeeds on its own.
+	blocked := func() Strategy {
+		return ForNop(func(ctx context.Context, _ StrategyTarget) error {
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}
+	// immediate returns a strategy which is satisfied straight away.
+	immediate := func() Strategy {
+		return ForNop(func(context.Context, StrategyTarget) error {
+			return nil
+		})
+	}
+
+	t.Run("not-yet-waited", func(t *testing.T) {
+		t.Parallel()
+
+		strategy := ForAny(immediate(), blocked())
+		if got := strategy.Winner(); got != nil {
+			t.Fatalf("expected no winner before WaitUntilReady, got %v", got)
+		}
+	})
+
+	t.Run("first-strategy-wins", func(t *testing.T) {
+		t.Parallel()
+
+		want := immediate()
+		strategy := ForAny(want, blocked())
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err != nil {
+			t.Fatal(err)
+		}
+
+		if got := strategy.Winner(); got != want {
+			t.Fatalf("expected the first strategy to win, got %v", got)
+		}
+	})
+
+	t.Run("last-strategy-wins", func(t *testing.T) {
+		t.Parallel()
+
+		want := immediate()
+		strategy := ForAny(blocked(), want)
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err != nil {
+			t.Fatal(err)
+		}
+
+		if got := strategy.Winner(); got != want {
+			t.Fatalf("expected the last strategy to win, got %v", got)
+		}
+	})
+
+	t.Run("middle-strategy-wins", func(t *testing.T) {
+		t.Parallel()
+
+		want := immediate()
+		strategy := ForAny(blocked(), want, blocked())
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err != nil {
+			t.Fatal(err)
+		}
+
+		if got := strategy.Winner(); got != want {
+			t.Fatalf("expected the middle strategy to win, got %v", got)
+		}
+	})
+
+	// The motivating case: distinguishing a success signal from a failure
+	// signal when either one may arrive first.
+	t.Run("distinguishes-success-from-failure", func(t *testing.T) {
+		t.Parallel()
+
+		success := blocked()
+		failure := immediate()
+
+		strategy := ForAny(success, failure)
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err != nil {
+			t.Fatal(err)
+		}
+
+		switch got := strategy.Winner(); got {
+		case failure:
+			// Expected: the failure signal arrived first.
+		case success:
+			t.Fatal("reported the success strategy, but the failure strategy was satisfied")
+		default:
+			t.Fatalf("unexpected winner: %v", got)
+		}
+	})
+
+	t.Run("no-winner-on-failure", func(t *testing.T) {
+		t.Parallel()
+
+		failing := ForNop(func(context.Context, StrategyTarget) error {
+			return errors.New("boom")
+		})
+
+		strategy := ForAny(failing, blocked())
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err == nil {
+			t.Fatal("expected an error, got none")
+		}
+
+		if got := strategy.Winner(); got != nil {
+			t.Fatalf("expected no winner after a failure, got %v", got)
+		}
+	})
+
+	t.Run("no-winner-on-deadline", func(t *testing.T) {
+		t.Parallel()
+
+		strategy := ForAny(blocked(), blocked()).WithDeadline(time.Millisecond * 50)
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err == nil {
+			t.Fatal("expected an error, got none")
+		}
+
+		if got := strategy.Winner(); got != nil {
+			t.Fatalf("expected no winner after a deadline, got %v", got)
+		}
+	})
+
+	t.Run("reset-between-calls", func(t *testing.T) {
+		t.Parallel()
+
+		want := immediate()
+		strategy := ForAny(want, blocked())
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strategy.Winner(); got != want {
+			t.Fatalf("expected a winner on the first call, got %v", got)
+		}
+
+		// A subsequent failing call must not report the stale winner.
+		strategy.Strategies = []Strategy{ForNop(func(context.Context, StrategyTarget) error {
+			return errors.New("boom")
+		})}
+		if err := strategy.WaitUntilReady(t.Context(), NopStrategyTarget{}); err == nil {
+			t.Fatal("expected an error, got none")
+		}
+		if got := strategy.Winner(); got != nil {
+			t.Fatalf("expected the winner to be reset, got %v", got)
+		}
+	})
+}

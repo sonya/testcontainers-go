@@ -22,6 +22,10 @@ type AnyMultiStrategy struct {
 
 	// additional properties
 	Strategies []Strategy
+
+	// winner is the index into Strategies of the strategy which was satisfied
+	// first, or -1 if WaitUntilReady has not yet completed successfully.
+	winner int
 }
 
 // WithStartupTimeoutDefault sets the default timeout for all inner wait strategies.
@@ -44,11 +48,25 @@ func (ms *AnyMultiStrategy) WithDeadline(deadline time.Duration) *AnyMultiStrate
 func ForAny(strategies ...Strategy) *AnyMultiStrategy {
 	return &AnyMultiStrategy{
 		Strategies: strategies,
+		winner:     -1,
 	}
 }
 
 func (ms *AnyMultiStrategy) Timeout() *time.Duration {
 	return ms.timeout
+}
+
+// Winner returns the strategy which was satisfied first, causing
+// WaitUntilReady to return. It returns nil if WaitUntilReady has not been
+// called, did not succeed, or succeeded without running any strategy.
+//
+// Winner is only safe to call once WaitUntilReady has returned.
+func (ms *AnyMultiStrategy) Winner() Strategy {
+	if ms.winner < 0 || ms.winner >= len(ms.Strategies) {
+		return nil
+	}
+
+	return ms.Strategies[ms.winner]
 }
 
 // String returns a human-readable description of the wait strategy.
@@ -74,10 +92,20 @@ func (ms *AnyMultiStrategy) String() string {
 	return "any of: [" + strings.Join(strategies, ", ") + "]"
 }
 
+// anyResult carries the outcome of a single strategy along with the index
+// identifying which strategy produced it.
+type anyResult struct {
+	index int
+	err   error
+}
+
 func (ms *AnyMultiStrategy) WaitUntilReady(ctx context.Context, target StrategyTarget) error {
 	if len(ms.Strategies) == 0 {
 		return errors.New("no wait strategy supplied")
 	}
+
+	// Reset any winner recorded by a previous call.
+	ms.winner = -1
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel() // All remaining strategies will stop when this fires.
@@ -87,7 +115,7 @@ func (ms *AnyMultiStrategy) WaitUntilReady(ctx context.Context, target StrategyT
 		defer cancel()
 	}
 
-	resCh := make(chan error, len(ms.Strategies))
+	resCh := make(chan anyResult, len(ms.Strategies))
 	var valid int
 
 	for _, strategy := range ms.Strategies {
@@ -97,6 +125,7 @@ func (ms *AnyMultiStrategy) WaitUntilReady(ctx context.Context, target StrategyT
 			// In this case, we just skip the nil strategy.
 			continue
 		}
+		index := valid
 		valid++
 
 		strategyCtx := ctx
@@ -107,7 +136,7 @@ func (ms *AnyMultiStrategy) WaitUntilReady(ctx context.Context, target StrategyT
 				defer cancel()
 			}
 		}
-		go func() { resCh <- strategy.WaitUntilReady(strategyCtx, target) }()
+		go func() { resCh <- anyResult{index: index, err: strategy.WaitUntilReady(strategyCtx, target)} }()
 	}
 
 	if valid == 0 {
@@ -116,10 +145,11 @@ func (ms *AnyMultiStrategy) WaitUntilReady(ctx context.Context, target StrategyT
 
 	for {
 		select {
-		case err := <-resCh:
-			if err != nil {
-				return err
+		case res := <-resCh:
+			if res.err != nil {
+				return res.err
 			}
+			ms.winner = res.index
 			return nil
 		case <-ctx.Done():
 			return fmt.Errorf("timed out waiting for strategies: %w", ctx.Err())
