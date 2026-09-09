@@ -23,3 +23,6 @@ req := ContainerRequest{
       WithDeadline(360*time.Second)                                             // Applies deadline for all Wait Strategies
 }
 ```
+
+See the [Any](any.md) wait strategy to wait for the first of a list of
+strategies to succeed instead of all of them.

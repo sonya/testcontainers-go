@@ -6,6 +6,7 @@ _Testcontainers for Go_ comes with the concept of `wait strategy`, which allows 
 
 Below you can find a list of the available wait strategies that you can use:
 
+- [Any](./any.md)
 - [Exec](./exec.md)
 - [Exit](./exit.md)
 - [File](./file.md)

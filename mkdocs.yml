@@ -48,6 +48,7 @@ nav:
         - features/creating_container.md
         - Wait Strategies:
             - Introduction: features/wait/introduction.md
+            - Any: features/wait/any.md
             - Exec: features/wait/exec.md
             - Exit: features/wait/exit.md
             - File: features/wait/file.md
